@@ -92,7 +92,7 @@ int checkOverAlloc(SEXP x);
 
 // forder.c
 int StrCmp(SEXP x, SEXP y);
-uint64_t dtwiddle(void *p, int i);
+uint64_t dtwiddle(void *p, int64_t i);
 SEXP forder(SEXP DT, SEXP by, SEXP retGrp, SEXP sortStrArg, SEXP orderArg, SEXP naArg);
 bool need2utf8(SEXP x, int n);
 SEXP isReallyReal(SEXP);

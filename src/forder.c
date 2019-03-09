@@ -31,12 +31,12 @@
 // #define TIMING_ON
 
 static bool retgrp = true;          // return group sizes as well as the ordering vector? If so then use gs, gsalloc and gsn :
-static int nrow = 0;                // used as group size stack allocation limit (when all groups are 1 row)
+static int64_t nrow = 0;                // used as group size stack allocation limit (when all groups are 1 row)
 static int *gs = NULL;              // gs = final groupsizes e.g. 23,12,87,2,1,34,...
 static int gs_alloc = 0;            // allocated size of gs
 static int gs_n = 0;                // the number of groups found so far (how much of the allocated gs is used)
 static int **gs_thread=NULL;        // each thread has a private buffer which gets flushed to the final gs appropriately
-static int *gs_thread_alloc=NULL;
+static int *gs_thread_alloc=NULL;   // we might attempt to write int64_t into this in push AFAIU
 static int *gs_thread_n=NULL;
 static int *TMP=NULL;               // UINT16_MAX*sizeof(int) for each thread; used by counting sort in radix_r()
 static uint8_t *UGRP=NULL;          // 256 bytes for each thread; used by counting sort in radix_r() when sortType==0 (byte appearance order)
@@ -93,7 +93,7 @@ static void cleanup() {
   savetl_end();  // Restore R's own usage of tl. Must run after the for loop in free_ustr() since only CHARSXP which had tl>0 (R's usage) are stored there.
 }
 
-static void push(const int *x, const int n) {
+static void push(const int64_t *x, const int n) {
   if (!retgrp) return;  // clearer to have the switch here rather than before each call
   int me = omp_get_thread_num();
   int newn = gs_thread_n[me] + n;
@@ -102,7 +102,7 @@ static void push(const int *x, const int n) {
     gs_thread[me] = realloc(gs_thread[me], gs_thread_alloc[me]*sizeof(int));
     if (gs_thread[me]==NULL) Error("Failed to realloc thread private group size buffer to %d*4bytes", (int)gs_thread_alloc[me]);
   }
-  memcpy(gs_thread[me]+gs_thread_n[me], x, n*sizeof(int));
+  memcpy(gs_thread[me]+gs_thread_n[me], x, n*sizeof(int64_t));
   gs_thread_n[me] += n;
 }
 
@@ -143,13 +143,13 @@ static void flush() {
 // range_* functions return [min,max] of the non-NAs as common uint64_t type
 // TODO parallelize these; not a priority according to TIMING_ON though (contiguous read with prefetch)
 
-static void range_i32(const int32_t *x, const int n, uint64_t *out_min, uint64_t *out_max, int *out_na_count)
+static void range_i32(const int32_t *x, const int64_t n, uint64_t *out_min, uint64_t *out_max, int64_t *out_na_count)
 {
   int32_t min = NA_INTEGER;
   int32_t max = NA_INTEGER;
-  int i=0;
+  int64_t i=0;
   while(i<n && x[i]==NA_INTEGER) i++;
-  int na_count = i;
+  int64_t na_count = i;
   if (i<n) max = min = x[i++];
   for(; i<n; i++) {
     int tmp = x[i];
@@ -164,13 +164,13 @@ static void range_i32(const int32_t *x, const int n, uint64_t *out_min, uint64_t
   *out_max = max ^ 0x80000000u;
 }
 
-static void range_i64(int64_t *x, int n, uint64_t *out_min, uint64_t *out_max, int *out_na_count)
+static void range_i64(int64_t *x, int64_t n, uint64_t *out_min, uint64_t *out_max, int64_t *out_na_count)
 {
   int64_t min = INT64_MIN;
   int64_t max = INT64_MIN;
-  int i=0;
+  int64_t i=0;
   while(i<n && x[i]==INT64_MIN) i++;
-  int na_count = i;
+  int64_t na_count = i;
   if (i<n) max = min = x[i++];
   for(; i<n; i++) {
     int64_t tmp = x[i];
@@ -186,12 +186,12 @@ static void range_i64(int64_t *x, int n, uint64_t *out_min, uint64_t *out_max, i
   *out_max = max ^ 0x8000000000000000u;
 }
 
-static void range_d(double *x, int n, uint64_t *out_min, uint64_t *out_max, int *out_na_count, int *out_infnan_count)
+static void range_d(double *x, int64_t n, uint64_t *out_min, uint64_t *out_max, int64_t *out_na_count, int64_t *out_infnan_count)
 // return range of finite numbers (excluding NA, NaN, -Inf, +Inf), a count of NA and a count of Inf|-Inf|NaN
 {
   uint64_t min=0, max=0;
-  int na_count=0, infnan_count=0;
-  int i=0;
+  int64_t na_count=0, infnan_count=0;
+  int64_t i=0;
   while(i<n && !R_FINITE(x[i])) { ISNA(x[i++]) ? na_count++ : infnan_count++; }
   if (i<n) { max = min = dtwiddle(x, i++);}
   for(; i<n; i++) {
@@ -280,16 +280,16 @@ static void cradix(SEXP *x, int n)
   free(cradix_xtmp);   cradix_xtmp=NULL;
 }
 
-static void range_str(SEXP *x, int n, uint64_t *out_min, uint64_t *out_max, int *out_na_count)
+static void range_str(SEXP *x, int64_t n, uint64_t *out_min, uint64_t *out_max, int64_t *out_na_count)
 // group numbers are left in truelength to be fetched by WRITE_KEY
 {
-  int na_count=0;
+  int64_t na_count=0;
   bool anyneedutf8=false;
   if (ustr_n!=0) Error("Internal error: ustr isn't empty when starting range_str: ustr_n=%d, ustr_alloc=%d", ustr_n, ustr_alloc);  // # nocov
   if (ustr_maxlen!=0) Error("Internal error: ustr_maxlen isn't 0 when starting range_str");  // # nocov
   // savetl_init() has already been called at the start of forder
   #pragma omp parallel for num_threads(getDTthreads())
-  for(int i=0; i<n; i++) {
+  for(int64_t i=0; i<n; i++) {
     SEXP s = x[i];
     if (s==NA_STRING) {
       #pragma omp atomic update
@@ -388,7 +388,7 @@ int getNumericRounding_C()
 
 // for signed integers it's easy: flip sign bit to swap positives and negatives; the resulting unsigned is in the right order with INT_MIN ending up as 0
 // for floating point finite you have to flip the other bits too if it was signed: http://stereopsis.com/radix.html
-uint64_t dtwiddle(void *p, int i)
+uint64_t dtwiddle(void *p, int64_t i)
 {
   union {
     double d;
@@ -406,7 +406,7 @@ uint64_t dtwiddle(void *p, int i)
   Error("Unknown non-finite value; not NA, NaN, -Inf or +Inf");  // # nocov
 }
 
-void radix_r(const int from, const int to, const int radix);
+void radix_r(const int64_t from, const int64_t to, const int radix);
 
 SEXP forder(SEXP DT, SEXP by, SEXP retGrpArg, SEXP sortGroupsArg, SEXP ascArg, SEXP naArg)
 // sortGroups TRUE from setkey and regular forder, FALSE from by= for efficiency so strings don't have to be sorted and can be left in appearance order
@@ -436,12 +436,12 @@ SEXP forder(SEXP DT, SEXP by, SEXP retGrpArg, SEXP sortGroupsArg, SEXP ascArg, S
   if (!length(DT)) error("DT is an empty list() of 0 columns");
   if (!isInteger(by) || !LENGTH(by)) error("DT has %d columns but 'by' is either not integer or is length 0", length(DT));  // seq_along(x) at R level
   if (!isInteger(ascArg) || LENGTH(ascArg)!=LENGTH(by)) error("Either 'ascArg' is not integer or its length (%d) is different to 'by's length (%d)", LENGTH(ascArg), LENGTH(by));
-  nrow = length(VECTOR_ELT(DT,0));
+  nrow = xlength(VECTOR_ELT(DT,0));
   for (int i=0; i<LENGTH(by); i++) {
     if (INTEGER(by)[i] < 1 || INTEGER(by)[i] > length(DT))
       error("'by' value %d out of range [1,%d]", INTEGER(by)[i], length(DT));
-    if ( nrow != length(VECTOR_ELT(DT, INTEGER(by)[i]-1)) )
-      error("Column %d is length %d which differs from length of column 1 (%d)\n", INTEGER(by)[i], length(VECTOR_ELT(DT, INTEGER(by)[i]-1)), nrow);
+    if ( nrow != xlength(VECTOR_ELT(DT, INTEGER(by)[i]-1)) )
+      error("Column %d is length %llu which differs from length of column 1 (%llu)\n", INTEGER(by)[i], xlength(VECTOR_ELT(DT, INTEGER(by)[i]-1)), nrow);
   }
 
   if (!isLogical(retGrpArg) || LENGTH(retGrpArg)!=1 || INTEGER(retGrpArg)[0]==NA_LOGICAL) error("retGrp must be TRUE or FALSE");
@@ -468,7 +468,7 @@ SEXP forder(SEXP DT, SEXP by, SEXP retGrpArg, SEXP sortGroupsArg, SEXP ascArg, S
   anso = INTEGER(ans);
   TEND(0)
   #pragma omp parallel for num_threads(getDTthreads())
-  for (int i=0; i<nrow; i++) anso[i]=i+1;   // gdb 8.1.0.20180409-git very slow here, oddly
+  for (int64_t i=0; i<nrow; i++) anso[i]=i+1;   // gdb 8.1.0.20180409-git very slow here, oddly
   TEND(1)
   savetl_init();   // from now on use Error not error
 
@@ -483,7 +483,7 @@ SEXP forder(SEXP DT, SEXP by, SEXP retGrpArg, SEXP sortGroupsArg, SEXP ascArg, S
     // Rprintf("Finding range of column %d ...\n", col);
     SEXP x = VECTOR_ELT(DT,INTEGER(by)[col]-1);
     uint64_t min=0, max=0;     // min and max of non-NA finite values
-    int na_count=0, infnan_count=0;
+    int64_t na_count=0, infnan_count=0;
     if (sortType) sortType=INTEGER(ascArg)[col];  // if sortType!=0 (not first-appearance) then +1/-1 comes from ascArg.
     //Rprintf("sortType = %d\n", sortType);
     switch(TYPEOF(x)) {
@@ -510,7 +510,7 @@ SEXP forder(SEXP DT, SEXP by, SEXP retGrpArg, SEXP sortGroupsArg, SEXP ascArg, S
     TEND(3);
     if (na_count==nrow || (min>0 && min==max && na_count==0 && infnan_count==0)) {
       // all same value; skip column as nothing to do;  [min,max] is just of finite values (excludes +Inf,-Inf,NaN and NA)
-      if (na_count==nrow && nalast==-1) { for (int i=0; i<nrow; i++) anso[i]=0; }
+      if (na_count==nrow && nalast==-1) { for (int64_t i=0; i<nrow; i++) anso[i]=0; }
       if (TYPEOF(x)==STRSXP) free_ustr();
       continue;
     }
@@ -594,7 +594,7 @@ SEXP forder(SEXP DT, SEXP by, SEXP retGrpArg, SEXP sortGroupsArg, SEXP ascArg, S
     case INTSXP : case LGLSXP : {
       int32_t *xd = INTEGER(x);
       #pragma omp parallel for num_threads(getDTthreads())
-      for (int i=0; i<nrow; i++) {
+      for (int64_t i=0; i<nrow; i++) {
         uint64_t elem=0;
         if (xd[i]==NA_INTEGER) {  // TODO: go branchless if na_count==0
           if (nalast==-1) anso[i]=0;
@@ -609,7 +609,7 @@ SEXP forder(SEXP DT, SEXP by, SEXP retGrpArg, SEXP sortGroupsArg, SEXP ascArg, S
       if (inherits(x, "integer64")) {
         int64_t *xd = (int64_t *)REAL(x);
         #pragma omp parallel for num_threads(getDTthreads())
-        for (int i=0; i<nrow; i++) {
+        for (int64_t i=0; i<nrow; i++) {
           uint64_t elem=0;
           if (xd[i]==INT64_MIN) {
             if (nalast==-1) anso[i]=0;
@@ -622,7 +622,7 @@ SEXP forder(SEXP DT, SEXP by, SEXP retGrpArg, SEXP sortGroupsArg, SEXP ascArg, S
       } else {
         double *xd = REAL(x);     // TODO: revisit double compression (skip bytes/mult by 10,100 etc) as currently it's often 6-8 bytes even for 3.14,3.15
         #pragma omp parallel for num_threads(getDTthreads())
-        for (int i=0; i<nrow; i++) {
+        for (int64_t i=0; i<nrow; i++) {
           uint64_t elem=0;
           if (!R_FINITE(xd[i])) {
             if (isinf(xd[i])) elem = signbit(xd[i]) ? min-1 : max+1;
@@ -641,7 +641,7 @@ SEXP forder(SEXP DT, SEXP by, SEXP retGrpArg, SEXP sortGroupsArg, SEXP ascArg, S
     case STRSXP : {
       SEXP *xd = STRING_PTR(x);
       #pragma omp parallel for num_threads(getDTthreads())
-      for (int i=0; i<nrow; i++) {
+      for (int64_t i=0; i<nrow; i++) {
         uint64_t elem=0;
         if (xd[i]==NA_STRING) {
           if (nalast==-1) anso[i]=0;
@@ -691,7 +691,7 @@ SEXP forder(SEXP DT, SEXP by, SEXP retGrpArg, SEXP sortGroupsArg, SEXP ascArg, S
     // Note that if nalast==-1 (remove NA) anso will contain 0's for the NAs and will be considered not-sorted.
     bool stop = false;
     #pragma omp parallel for num_threads(getDTthreads())
-    for (int i=0; i<nrow; i++) {
+    for (int64_t i=0; i<nrow; i++) {
       if (stop) continue;
       if (anso[i]!=i+1) stop=true;
     }
@@ -763,11 +763,12 @@ static bool sort_ugrp(uint8_t *x, const int n)
   return skip;
 }
 
-void radix_r(const int from, const int to, const int radix) {
+void radix_r(const int64_t from, const int64_t to, const int radix) {
   TBEG();
-  const int my_n = to-from+1;
-  if (my_n==1) {  // minor TODO: batch up the 1's instead in caller (and that's only needed when retgrp anyway)
-    push(&my_n, 1);
+  const int my_n = (int)(to-from+1); // to-from+1 should be very small according to comment below
+  if ((to-from+1)==1) {  // minor TODO: batch up the 1's instead in caller (and that's only needed when retgrp anyway)
+    const int64_t my_n_64_t = (int)(to-from+1); // to-from+1 should be very small according to comment below
+    push(&my_n_64_t, 1);
     TEND(5);
     return;
   }
@@ -866,7 +867,8 @@ void radix_r(const int from, const int to, const int radix) {
     if (radix+1==nradix && !retgrp) {
       return;
     }
-    int ngrp=0, my_gs[my_n];  //minor TODO: could know number of groups with certainty up above
+    int ngrp=0;
+    int64_t my_gs[my_n];  //minor TODO: could know number of groups with certainty up above
     my_gs[ngrp]=1;
     for (int i=1; i<my_n; i++) {
       if (my_key[i]!=my_key[i-1]) my_gs[++ngrp] = 1;
@@ -877,7 +879,7 @@ void radix_r(const int from, const int to, const int radix) {
     if (radix+1==nradix || ngrp==my_n) {  // ngrp==my_n => unique groups all size 1 and we can stop recursing now
       push(my_gs, ngrp);
     } else {
-      for (int i=0, f=from; i<ngrp; i++) {
+      for (int64_t i=0, f=from; i<ngrp; i++) {
         radix_r(f, f+my_gs[i]-1, radix+1);
         f+=my_gs[i];
       }
@@ -963,7 +965,7 @@ void radix_r(const int from, const int to, const int radix) {
     if (!retgrp && radix+1==nradix) {
       return;  // we're done. avoid allocating and populating very last group sizes for last key
     }
-    int my_gs[ngrp==0 ? 256 : ngrp];  // ngrp==0 when sort and skip==true; we didn't count the non-zeros in my_counts yet in that case
+    int64_t my_gs[ngrp==0 ? 256 : ngrp];  // ngrp==0 when sort and skip==true; we didn't count the non-zeros in my_counts yet in that case
     if (sortType!=0) {
       ngrp=0;
       for (int i=0; i<256; i++) if (my_counts[i]) my_gs[ngrp++]=my_counts[i];  // this casts from uint16_t to int32, too
@@ -1137,7 +1139,7 @@ void radix_r(const int from, const int to, const int radix) {
   TEND(19 + notFirst*3)
   notFirst = true;
 
-  int my_gs[ngrp];
+  int64_t my_gs[ngrp];
   for (int i=1; i<ngrp; i++) my_gs[i-1] = starts[ugrp[i]] - starts[ugrp[i-1]];   // use the first row of starts to get totals
   my_gs[ngrp-1] = my_n - starts[ugrp[ngrp-1]];
 
@@ -1163,7 +1165,7 @@ void radix_r(const int from, const int to, const int radix) {
       // is skew in that one or a few are significantly bigger than the others, then they'll all go one-by-one
       // each in parallel here and they're all dealt with in parallel. There is no nestedness here.
       for (int i=0; i<ngrp; i++) {
-        int start = from + starts[ugrp[i]];
+        int64_t start = from + starts[ugrp[i]];
         radix_r(start, start+my_gs[i]-1, radix+1);
         flush();
       }
@@ -1174,7 +1176,7 @@ void radix_r(const int from, const int to, const int radix) {
       if (retgrp) {
         #pragma omp parallel for ordered schedule(dynamic) num_threads(getDTthreads())
         for (int i=0; i<ngrp; i++) {
-          int start = from + starts[ugrp[i]];
+          int64_t start = from + starts[ugrp[i]];
           radix_r(start, start+my_gs[i]-1, radix+1);
           #pragma omp ordered
           flush();
@@ -1183,7 +1185,7 @@ void radix_r(const int from, const int to, const int radix) {
         // flush() is only relevant when retgrp==true so save the redundant ordered clause
         #pragma omp parallel for schedule(dynamic) num_threads(getDTthreads())
         for (int i=0; i<ngrp; i++) {
-          int start = from + starts[ugrp[i]];
+          int64_t start = from + starts[ugrp[i]];
           radix_r(start, start+my_gs[i]-1, radix+1);
         }
       }
