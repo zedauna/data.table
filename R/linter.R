@@ -39,10 +39,40 @@ has_call = function(e, f) {
 has_ifelse = function(e) has_call(e, 'ifelse')
 has_system.time = function(e) has_call(e, 'system.time')
 
+re_encode = function(x) gsub(' +', '[\\\\s\\\\n]*', gsub('([.()])', '\\\\\\1', x))
+pairlist_to_str = function(x) {
+  paste(sprintf('%s[\\s\\n]*=[\\s\\n]*%s', names(x), sapply(x, deparse, USE.NAMES = FALSE)),
+        collapse = ',[\\s\\n]*')
+}
+peel_body = function(e) {
+  tmp = tempfile()
+  cat(as.character(e), file = tmp)
+  on.exit(unlink(tmp))
+
+  drop_regex = sprintf(
+    '^[\\s\\n]*%s[\\s\\n]*%s[\\s\\n]*function\\(%s\\)[\\s\\n]*\\{?[\\s\\n]*|[\\s\\n]*\\}?[\\s\\n]*$',
+    re_encode(e[[1L]][[2L]]),
+    as.character(e[[1L]][[1L]]),
+    re_encode(pairlist_to_str(e[[1L]][[3L]][[2L]]))
+  )
+  fl = paste(readLines(tmp, warn = FALSE), collapse = '\n')
+  # restore }\nelse as } else;
+  #   see https://bugs.r-project.org/bugzilla/show_bug.cgi?id=17726
+  re = '(.*)\\}\\s*\\n\\s*else(.*)'
+  while (grepl(re, fl)) fl = sub(re, '\\1} else\\2', fl)
+  writeLines(gsub(drop_regex, '', fl, perl = TRUE), tmp)
+  parse(tmp, keep.source = TRUE)
+}
 
 for (f in list.files('R', full.names = TRUE)) {
   t = parse(f, keep.source = TRUE)
-  #idx = sapply(t, has_int_as_numeric)
+  idx = which(sapply(t, has_int_as_numeric))
+  if (length(idx)) {
+    for (expri in idx) {
+      e = peel_body(t[expri])
+      idx = sapply(e, has_int_as_numeric)
+    }
+  }
   idx = sapply(t, has_quoted_Call)
   if (any(idx)) {
     cat('Found Call(" in', f, '\n\n')
