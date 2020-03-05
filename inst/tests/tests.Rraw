@@ -27,6 +27,7 @@ if (exists("test.data.table", .GlobalEnv, inherits=FALSE)) {
   brackify = data.table:::brackify
   chmatchdup = data.table:::chmatchdup
   compactprint = data.table:::compactprint
+  CsubsetDT = data.table:::CsubsetDT
   cube.data.table = data.table:::cube.data.table
   dcast.data.table = data.table:::dcast.data.table
   forder = data.table:::forder

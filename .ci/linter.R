@@ -50,7 +50,9 @@ peel_body = function(e) {
   on.exit(unlink(tmp))
 
   drop_regex = sprintf(
-    '^[\\s\\n]*%s[\\s\\n]*%s[\\s\\n]*function\\(%s\\)[\\s\\n]*\\{?[\\s\\n]*|[\\s\\n]*\\}?[\\s\\n]*$',
+    paste(
+      '^', '%s', '%s', 'function\\(%s\\)', '\\{?', '|', '\\}?', '$', sep = '[\\s\\n]*'
+    ),
     re_encode(e[[1L]][[2L]]),
     as.character(e[[1L]][[1L]]),
     re_encode(pairlist_to_str(e[[1L]][[3L]][[2L]]))
