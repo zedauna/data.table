@@ -27,6 +27,7 @@ environment:
 # continue tests even if some script failed
     _R_CHECK_TESTS_NLINES_: 0
 # Block truncation of any error messages in R CMD check
+    LANGUAGE: zh_CN
 
   matrix:
 
