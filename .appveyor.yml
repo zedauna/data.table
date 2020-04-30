@@ -6,6 +6,7 @@ init:
         $ErrorActionPreference = "Stop"
         Invoke-WebRequest http://raw.github.com/krlmlr/r-appveyor/master/scripts/appveyor-tool.ps1 -OutFile "..\appveyor-tool.ps1"
         Import-Module '..\appveyor-tool.ps1'
+        Set-WinSystemLocale zh-CN
 
 install:   # this is needed.  Don't remove it. Don't know what it does, though.  It is not Bootstrap CSS it seems.
   ps: Bootstrap
